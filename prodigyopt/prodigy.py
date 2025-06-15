@@ -239,12 +239,17 @@ class Prodigy(torch.optim.Optimizer):
             if d == group['d0']:
                 d = max(d, d_hat)
             
+            # Check for cosine decay logic first
+            cosine_decay_enabled = group['cosine_decay']
+            in_decay_phase = group['in_decay_phase'] if cosine_decay_enabled else False
+            
             # Store previous d_max to detect growth
             prev_d_max = d_max
-            d_max = max(d_max, d_hat)
             
-            # Check for cosine decay logic
-            cosine_decay_enabled = group['cosine_decay']
+            # Only update d_max if not in decay phase
+            if not in_decay_phase:
+                d_max = max(d_max, d_hat)
+            
             if cosine_decay_enabled:
                 peak_patience = group['peak_patience']
                 total_training_steps = group['total_training_steps']
