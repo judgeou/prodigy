@@ -11,6 +11,7 @@ Paper: https://arxiv.org/pdf/2306.06101.pdf
 ## Installation
 To install the package, simply run
 ```pip install prodigyopt```
+
 ## How to use
 Let `net` be the neural network you want to train. Then, you can use the method as follows:
 ```
@@ -19,6 +20,27 @@ from prodigyopt import Prodigy
 # set slice_p to 11 if you have limited memory, 1 by default
 opt = Prodigy(net.parameters(), lr=1., weight_decay=weight_decay, slice_p=slice_p)
 ```
+
+### Advanced Usage with Cosine Decay
+Prodigy now supports built-in cosine learning rate decay that automatically detects peak learning rate and applies decay:
+```
+from prodigyopt import Prodigy
+opt = Prodigy(
+    net.parameters(), 
+    lr=1., 
+    weight_decay=weight_decay, 
+    slice_p=slice_p,
+    cosine_decay=True,                    # Enable automatic cosine decay
+    peak_patience=50,                     # Wait 50 steps with no d growth to detect peak
+    total_training_steps=10000            # Total training steps for proper decay scheduling
+)
+```
+
+**New Parameters:**
+- `cosine_decay` (bool): Enable automatic cosine decay after detecting peak learning rate (default: False)
+- `peak_patience` (int): Number of consecutive steps with no d growth to consider peak reached (default: 50)
+- `total_training_steps` (int): Total number of training steps. When peak is detected, cosine decay will use remaining steps automatically. If None, defaults to 1000 steps from peak (default: None)
+
 Note that by default, Prodigy uses weight decay as in AdamW. 
 If you want it to use standard $\ell_2$ regularization (as in Adam), use option `decouple=False`. 
 We recommend using `lr=1.` (default) for all networks. If you want to force the method to estimate a smaller or larger learning rate, 
@@ -28,9 +50,22 @@ Standard values of `weight_decay` to try are 0 (default in Prodigy), 0.001, 0.01
 Use values of `slice_p` larger than 1 to reduce the memory consumption. `slice_p=11` should give a good trade-off
  between accuracy of estimate learning rate and memory efficiency.
 
-
 ## Scheduler 
-As a rule of thumb, we recommend either using no scheduler or using cosine annealing with the method:
+As a rule of thumb, we recommend either using no scheduler, using the built-in cosine decay feature, or using cosine annealing with the method:
+
+### Built-in Cosine Decay (Recommended)
+The optimizer now includes automatic cosine decay that detects the peak learning rate and applies decay:
+```
+opt = Prodigy(
+    net.parameters(),
+    cosine_decay=True,
+    peak_patience=50,              # Adjust based on your training dynamics
+    total_training_steps=total_steps
+)
+```
+
+### External Scheduler
+Alternatively, you can use external schedulers:
 ```
 # n_epoch is the total number of epochs to train the network
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps)
@@ -39,16 +74,32 @@ We do not recommend using restarts in cosine annealing, so we suggest setting `T
 `total_steps` should be the number of times `scheduler.step()` is called. If you do use restarts, we highly
 recommend setting `safeguard_warmup=True`.
 
+**Note:** When using the built-in `cosine_decay=True`, avoid using external learning rate schedulers as they may interfere with the automatic decay mechanism.
+
 Extra care should be taken if you use linear warm-up at the beginning: 
 The method will see slow progress due to the initially small base learning rate, 
 so it might overestimate `d`.
 To avoid issues with warm-up, use option `safeguard_warmup=True`.  
+
 ## Diffusion models
 Based on the interaction with some of the users, we recommend setting `safeguard_warmup=True`,
  `use_bias_correction=True`, and `weight_decay=0.01` when training diffusion models. 
 Sometimes, [it is helpful](https://github.com/konstmish/prodigy/issues/8) to set `betas=(0.9, 0.99)`.  
 If the model is not training, try to keep track of `d` and if it remains too small, [it might be worth increasing `d0`](https://github.com/konstmish/prodigy/issues/27) to 1e-5 or even 1e-4. 
 That being said, the optimizer was mostly insensitive to `d0` in our other experiments.
+
+For diffusion models, the built-in cosine decay can be particularly useful:
+```
+opt = Prodigy(
+    net.parameters(),
+    safeguard_warmup=True,
+    use_bias_correction=True,
+    weight_decay=0.01,
+    cosine_decay=True,
+    peak_patience=100,  # May need higher patience for diffusion models
+    total_training_steps=total_steps
+)
+```
 
 ## Examples of using Prodigy 
 
