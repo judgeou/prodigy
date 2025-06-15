@@ -55,6 +55,10 @@ class Prodigy(torch.optim.Optimizer):
         slice_p (int): Reduce memory usage by calculating LR adaptation statistics on only every 
             pth entry of each tensor. For values greater than 1 this is an approximation to standard 
             Prodigy. Values ~11 are reasonable (default 1).
+        cosine_decay (bool): Enable cosine decay after reaching peak learning rate (default False).
+        peak_patience (int): Number of consecutive steps with no d growth to consider peak reached (default 50).
+        total_training_steps (int): Total number of training steps. When peak is detected, cosine decay will 
+            use remaining steps automatically. If None, defaults to 1000 steps from peak (default None).
     """
     def __init__(self, params, lr=1.0,
                  betas=(0.9, 0.999), beta3=None,
@@ -62,7 +66,8 @@ class Prodigy(torch.optim.Optimizer):
                  use_bias_correction=False, safeguard_warmup=False,
                  d0=1e-6, d_coef=1.0, growth_rate=float('inf'),
                  fsdp_in_use=False,
-                 slice_p=1):
+                 slice_p=1,
+                 cosine_decay=False, peak_patience=50, total_training_steps=None):
         if not 0.0 < d0:
             raise ValueError("Invalid d0 value: {}".format(d0))
         if not 0.0 < lr:
@@ -86,7 +91,11 @@ class Prodigy(torch.optim.Optimizer):
                         use_bias_correction=use_bias_correction,
                         decouple=decouple, safeguard_warmup=safeguard_warmup,
                         fsdp_in_use=fsdp_in_use,
-                        slice_p=slice_p)
+                        slice_p=slice_p,
+                        cosine_decay=cosine_decay, peak_patience=peak_patience,
+                        total_training_steps=total_training_steps,
+                        peak_step=0, no_growth_count=0, in_decay_phase=False,
+                        cosine_decay_steps=1000)
         self.d0 = d0
         super().__init__(params, defaults)
 
@@ -229,8 +238,59 @@ class Prodigy(torch.optim.Optimizer):
             d_hat = d_coef * global_d_numerator / global_d_denom
             if d == group['d0']:
                 d = max(d, d_hat)
+            
+            # Store previous d_max to detect growth
+            prev_d_max = d_max
             d_max = max(d_max, d_hat)
-            d = min(d_max, d * growth_rate)
+            
+            # Check for cosine decay logic
+            cosine_decay_enabled = group['cosine_decay']
+            if cosine_decay_enabled:
+                peak_patience = group['peak_patience']
+                total_training_steps = group['total_training_steps']
+                no_growth_count = group['no_growth_count']
+                in_decay_phase = group['in_decay_phase']
+                peak_step = group['peak_step']
+                
+                # Check if d_max has grown
+                if d_max > prev_d_max:
+                    # Reset counter when we see growth
+                    no_growth_count = 0
+                else:
+                    # Increment counter when no growth
+                    no_growth_count += 1
+                
+                # Enter decay phase if we've had no growth for peak_patience steps
+                if not in_decay_phase and no_growth_count >= peak_patience:
+                    in_decay_phase = True
+                    peak_step = k
+                    
+                    # Calculate remaining steps for cosine decay
+                    if total_training_steps is not None:
+                        remaining_steps = max(1, total_training_steps - k)
+                        print(f"Peak detected at step {k}, starting cosine decay over {remaining_steps} remaining steps")
+                    else:
+                        remaining_steps = 1000  # fallback default
+                        print(f"Peak detected at step {k}, starting cosine decay over {remaining_steps} steps (default)")
+                    
+                    # Store the cosine decay steps in the group
+                    group['cosine_decay_steps'] = remaining_steps
+                
+                # Apply cosine decay if in decay phase
+                if in_decay_phase:
+                    cosine_decay_steps = group['cosine_decay_steps']
+                    decay_progress = min((k - peak_step) / cosine_decay_steps, 1.0)
+                    cosine_factor = 0.5 * (1 + math.cos(math.pi * decay_progress))
+                    d = d_max * cosine_factor
+                else:
+                    d = min(d_max, d * growth_rate)
+                
+                # Update group state
+                group['no_growth_count'] = no_growth_count
+                group['in_decay_phase'] = in_decay_phase
+                group['peak_step'] = peak_step
+            else:
+                d = min(d_max, d * growth_rate)
 
         for group in self.param_groups:
             group['d_numerator'] = global_d_numerator
