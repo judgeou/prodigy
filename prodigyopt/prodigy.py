@@ -286,7 +286,20 @@ class Prodigy(torch.optim.Optimizer):
                     cosine_decay_steps = group['cosine_decay_steps']
                     decay_progress = min((k - peak_step) / cosine_decay_steps, 1.0)
                     cosine_factor = 0.5 * (1 + math.cos(math.pi * decay_progress))
-                    d = d_max * cosine_factor
+                    d_proposed = d_max * cosine_factor
+                    
+                    # Check if the natural d estimate suggests we should go higher
+                    d_natural = min(d_max, d * growth_rate)
+                    
+                    # If natural estimate is significantly higher, reset cosine state
+                    if d_natural > d_proposed * 1.05:  # 5% threshold to avoid noise
+                        print(f"Step {k}: Learning rate wants to rise (natural: {d_natural:.6f} vs cosine: {d_proposed:.6f}), resetting cosine decay")
+                        in_decay_phase = False
+                        no_growth_count = 0
+                        peak_step = 0
+                        d = d_natural
+                    else:
+                        d = d_proposed
                 else:
                     d = min(d_max, d * growth_rate)
                 
